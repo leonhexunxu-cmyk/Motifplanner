@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
+from contextlib import contextmanager
 
 DB=os.getenv("DATABASE_PATH","motif-planner.sqlite3")
 SECRET=os.getenv("MOTIF_SECRET_KEY","").encode()
@@ -10,8 +11,15 @@ INVITE=os.getenv("MOTIF_INVITE_CODE","")
 FRONTEND=os.getenv("FRONTEND_ORIGIN","https://leonhexunxu-cmyk.github.io")
 PORT=int(os.getenv("PORT","8787"))
 def now(): return datetime.now(timezone.utc).isoformat()
+@contextmanager
 def db():
- c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;return c
+ c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row
+ try:
+  yield c
+  c.commit()
+ except Exception:
+  c.rollback();raise
+ finally:c.close()
 def init():
  with db() as c:
   c.executescript("""
@@ -59,10 +67,11 @@ class Handler(BaseHTTPRequestHandler):
   return u
  def do_GET(self):
   try:
-   p=urlparse(self.path);path=p.path;u=self.require()
+   p=urlparse(self.path);path=p.path
+   if path=="/health":return self.send(200,{"ok":True,"service":"motif-planner"})
+   u=self.require()
    if not u:return
    with db() as c:
-    if path=="/health":return self.send(200,{"ok":True,"service":"motif-planner"})
     if path=="/api/auth/me":return self.send(200,{"user":user_dict(u)})
     if path=="/api/tasks":
      rows=c.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id ORDER BY CASE t.status WHEN 'done' THEN 2 ELSE 0 END,t.due_date").fetchall();return self.send(200,[dict(x) for x in rows])
