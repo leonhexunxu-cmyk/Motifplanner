@@ -1,4 +1,4 @@
-import os, json, sqlite3, secrets, hashlib, hmac, time
+import os, json, sqlite3, secrets, hashlib, hmac, time, mimetypes
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
@@ -69,6 +69,11 @@ class Handler(BaseHTTPRequestHandler):
   try:
    p=urlparse(self.path);path=p.path
    if path=="/health":return self.send(200,{"ok":True,"service":"motif-planner"})
+   static_files={"/":"index.html","/index.html":"index.html","/styles.css":"styles.css","/app.js":"app.js","/config.js":"config.js"}
+   if path in static_files:
+    file=Path(__file__).parent/static_files[path]
+    if not file.is_file():return self.send(404,{"detail":"Fichier introuvable"})
+    raw=file.read_bytes();self.send_response(200);self.send_header("Content-Type",mimetypes.guess_type(str(file))[0] or "application/octet-stream");self.send_header("Content-Length",str(len(raw)));self.send_header("Cache-Control","no-cache");self.send_header("X-Content-Type-Options","nosniff");self.end_headers();self.wfile.write(raw);return
    u=self.require()
    if not u:return
    with db() as c:
