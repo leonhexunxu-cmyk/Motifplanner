@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: motifplanner-api
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: python server.py
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: MOTIF_SECRET_KEY
+        generateValue: true
+      - key: MOTIF_INVITE_CODE
+        generateValue: true
+      - key: FRONTEND_ORIGIN
+        value: https://leonhexunxu-cmyk.github.io
