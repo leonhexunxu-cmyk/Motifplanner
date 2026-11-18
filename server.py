@@ -149,7 +149,8 @@ class Handler(BaseHTTPRequestHandler):
       if not inv:return self.send(403,{"detail":"Invitation invalide ou déjà utilisée"})
       c.execute("UPDATE invites SET used=1 WHERE code_hash=?",(ch,));role="member"
      salt=secrets.token_bytes(16)
-     try:c.execute("INSERT INTO users(name,email,password,salt,role,created_at) VALUES(?,?,?,?,?,?)",(name,email,pw_hash(pw,salt),salt.hex(),role,now()))
+     department="Direction" if role=="admin" else "À définir"
+     try:c.execute("INSERT INTO users(name,email,password,salt,department,role,created_at) VALUES(?,?,?,?,?,?,?)",(name,email,pw_hash(pw,salt),salt.hex(),department,role,now()))
      except sqlite3.IntegrityError:return self.send(409,{"detail":"Cet email est déjà utilisé"})
      uid=c.execute("SELECT id FROM users WHERE email=?",(email,)).fetchone()[0]
     t=make_token(uid)
