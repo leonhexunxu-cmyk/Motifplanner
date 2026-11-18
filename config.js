@@ -1,2 +1,2 @@
-// The API URL can also be changed from the login screen.
-window.MOTIF_API_URL = window.MOTIF_API_URL || "";
+// Public API endpoint for the Motif Planner backend.
+window.MOTIF_API_URL = "https://motifplanner-api-7p28.onrender.com";
