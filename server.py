@@ -276,6 +276,20 @@ class Handler(BaseHTTPRequestHandler):
    u=self.require()
    if not u:return
    path=urlparse(self.path).path
+   if path.startswith("/api/admin/users/"):
+    if u["role"]!="admin":return self.send(403,{"detail":"Réservé à l’administrateur"})
+    uid=int(path.rsplit("/",1)[1]);b=body(self)
+    with db() as c:
+     target=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone()
+     if not target:return self.send(404,{"detail":"Membre introuvable"})
+     if target["role"]=="admin":return self.send(403,{"detail":"Les droits d’un autre administrateur ne peuvent pas être modifiés ici"})
+     department=str(b.get("department",target["department"])).strip()[:80]
+     if not department:return self.send(400,{"detail":"Département requis"})
+     permissions=b.get("permissions",{})
+     if not isinstance(permissions,dict) or any(k not in PERM_KEYS for k in permissions):return self.send(400,{"detail":"Permissions invalides"})
+     normalized={k:bool(permissions.get(k,default_permissions(target["role"])[k])) for k in PERM_KEYS}
+     c.execute("UPDATE users SET department=?,permissions=? WHERE id=?",(department,json.dumps(normalized),uid))
+     return self.send(200,{"user":user_dict(c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone())})
    if not path.startswith("/api/tasks/"):return self.send(404,{"detail":"Route inconnue"})
    tid=int(path.rsplit("/",1)[1]);b=body(self)
    with db() as c:
