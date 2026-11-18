@@ -52,7 +52,19 @@ def make_token(uid):
  t=secrets.token_urlsafe(36)
  with db() as c:c.execute("INSERT INTO sessions VALUES(?,?,?)",(token_hash(t),uid,int(time.time())+60*60*24*14))
  return t
-def user_dict(r): return {**{k:r[k] for k in ("id","name","email","role","status")},"department":r["department"] or ("Direction" if r["role"]=="admin" else ""),"permissions":json.loads(r["permissions"] or "{}") if "permissions" in r.keys() else {}}
+PERM_KEYS=("create_tasks","assign_tasks","manage_projects","manage_calendar","share_files","use_ai","use_messages","use_calls")
+def default_permissions(role):
+ return {k:(role=="admin" or k in ("create_tasks","use_ai","share_files","use_messages","use_calls")) for k in PERM_KEYS}
+def has_perm(u,key):
+ if u["role"]=="admin":return True
+ try: saved=json.loads(u["permissions"] or "{}")
+ except Exception: saved={}
+ return bool(saved.get(key,default_permissions(u["role"]).get(key,False)))
+def user_dict(r):
+ try: saved=json.loads(r["permissions"] or "{}")
+ except Exception: saved={}
+ defaults=default_permissions(r["role"])
+ return {**{k:r[k] for k in ("id","name","email","role","status")},"department":r["department"] or ("Direction" if r["role"]=="admin" else ""),"permissions":{k:saved.get(k,defaults[k]) for k in PERM_KEYS}}
 def body(h):
  n=int(h.headers.get("Content-Length","0"))
  if n>7500000: raise ValueError("Payload trop volumineux (maximum 5 Mo pour un fichier)")
@@ -175,13 +187,28 @@ class Handler(BaseHTTPRequestHandler):
      code=str(b.get("code",""))
      if len(code)<12:return self.send(400,{"detail":"Code invalide"})
      c.execute("INSERT INTO invites(code_hash,created_by,created_at) VALUES(?,?,?)",(hashlib.sha256(code.encode()).hexdigest(),u["id"],now()));return self.send(201,{"ok":True})
+    if path=="/api/projects":
+     if not has_perm(u,"manage_projects"):return self.send(403,{"detail":"Droit de gestion des projets requis"})
+     name=str(b.get("name","")).strip()
+     if not name:return self.send(400,{"detail":"Nom de projet requis"})
+     try:cur=c.execute("INSERT INTO projects(name,description,created_by,created_at) VALUES(?,?,?,?)",(name[:80],str(b.get("description",""))[:500],u["id"],now()))
+     except sqlite3.IntegrityError:return self.send(409,{"detail":"Ce projet existe déjà"})
+     return self.send(201,{"id":cur.lastrowid})
+    if path=="/api/account/profile":
+     department=str(b.get("department","")).strip()[:80]
+     if not department:return self.send(400,{"detail":"Un département est obligatoire"})
+     c.execute("UPDATE users SET department=? WHERE id=?",(department,u["id"]))
+     return self.send(200,{"user":user_dict(c.execute("SELECT * FROM users WHERE id=?",(u["id"],)).fetchone())})
     if path=="/api/tasks":
+     if not has_perm(u,"create_tasks"):return self.send(403,{"detail":"Droit de création de tâches requis"})
      title=str(b.get("title","")).strip()
      if not title:return self.send(400,{"detail":"Titre requis"})
      assignee=b.get("assignee_id") or None
-     if assignee and u["role"]=="member" and int(assignee)!=u["id"]:return self.send(403,{"detail":"Vous ne pouvez assigner qu’à vous-même"})
+     if assignee and int(assignee)!=u["id"] and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
      if u["role"]=="member" and assignee is None:assignee=u["id"]
-     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at) VALUES(?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,str(b.get("due_date",""))[:10],b.get("priority","normal"),u["id"],now()))
+     project_id=b.get("project_id") or None
+     if project_id and not c.execute("SELECT 1 FROM projects WHERE id=?",(int(project_id),)).fetchone():return self.send(400,{"detail":"Projet introuvable"})
+     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,str(b.get("due_date",""))[:10],b.get("priority","normal"),u["id"],now(),project_id))
      if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
      return self.send(201,{"id":cur.lastrowid})
     if path=="/api/events":
