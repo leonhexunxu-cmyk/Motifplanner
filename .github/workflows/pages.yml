@@ -4,6 +4,9 @@ on:
     branches: [main]
     paths:
       - "index.html"
+      - "app.js"
+      - "styles.css"
+      - "config.js"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 permissions:
