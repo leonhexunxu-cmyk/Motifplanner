@@ -95,7 +95,7 @@ class Handler(BaseHTTPRequestHandler):
    path=urlparse(self.path).path;b=body(self)
    if path=="/api/auth/register":
     name=str(b.get("name","")).strip();email=str(b.get("email","")).strip().lower();pw=str(b.get("password",""));code=str(b.get("invite",""))
-    if len(name)<2 or len(email)>254 or "@" not in email or len(pw)<10:return self.send(400,{"detail":"Nom, email valide et mot de passe de 10 caractères minimum requis"})
+    if len(name)<2 or len(email)>254 or "@" not in email or len(pw)<10 or len(pw)>128:return self.send(400,{"detail":"Nom, email valide et mot de passe de 10 caractères minimum requis"})
     with db() as c:
      count=c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
      if count==0:
@@ -145,6 +145,9 @@ class Handler(BaseHTTPRequestHandler):
      cur=c.execute("INSERT INTO messages(user_id,body,created_at) VALUES(?,?,?)",(u["id"],msg,now()));return self.send(201,{"id":cur.lastrowid})
     if path=="/api/calls":
      cid=secrets.token_urlsafe(16);c.execute("INSERT INTO calls(id,created_by,created_at) VALUES(?,?,?)",(cid,u["id"],now()));return self.send(201,{"id":cid})
+    if path.startswith("/api/calls/") and path.endswith("/end"):
+     cid=path.split("/")[3]
+     c.execute("UPDATE calls SET ended=1 WHERE id=? AND created_by=?",(cid,u["id"]));return self.send(200,{"ok":True})
     if path.startswith("/api/calls/") and path.endswith("/signals"):
      cid=path.split("/")[3]
      if not c.execute("SELECT 1 FROM calls WHERE id=? AND ended=0",(cid,)).fetchone():return self.send(404,{"detail":"Appel introuvable"})
@@ -168,6 +171,8 @@ class Handler(BaseHTTPRequestHandler):
     changes={k:v for k,v in b.items() if k in allowed}
     if u["role"]=="member":changes={k:v for k,v in changes.items() if k=="status"}
     if not changes:return self.send(400,{"detail":"Aucun champ modifiable"})
+    if "status" in changes and changes["status"] not in ("todo","doing","done"):return self.send(400,{"detail":"Statut invalide"})
+    if "priority" in changes and changes["priority"] not in ("low","normal","high"):return self.send(400,{"detail":"Priorité invalide"})
     c.execute("UPDATE tasks SET "+",".join(k+"=?" for k in changes)+" WHERE id=?",(*changes.values(),tid))
     return self.send(200,{"ok":True})
   except Exception as e:return self.send(400,{"detail":str(e)})
