@@ -1,9 +1,10 @@
-import os, json, sqlite3, secrets, hashlib, hmac, time, mimetypes
+import os, json, sqlite3, secrets, hashlib, hmac, time, mimetypes, base64, urllib.request, urllib.error
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 from contextlib import contextmanager
+from cryptography.fernet import Fernet
 
 DB=os.getenv("DATABASE_PATH","motif-planner.sqlite3")
 SECRET=os.getenv("MOTIF_SECRET_KEY","").encode()
@@ -11,6 +12,9 @@ INVITE=os.getenv("MOTIF_INVITE_CODE","")
 FRONTEND=os.getenv("FRONTEND_ORIGIN","https://leonhexunxu-cmyk.github.io")
 PORT=int(os.getenv("PORT","8787"))
 def now(): return datetime.now(timezone.utc).isoformat()
+def vault():
+ if not SECRET: raise RuntimeError('MOTIF_SECRET_KEY doit être configurée')
+ return Fernet(base64.urlsafe_b64encode(hashlib.sha256(SECRET).digest()))
 @contextmanager
 def db():
  c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row
@@ -32,6 +36,9 @@ def init():
   CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY,created_by INTEGER NOT NULL,created_at TEXT NOT NULL,ended INTEGER DEFAULT 0);
   CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY,call_id TEXT NOT NULL,user_id INTEGER NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,title TEXT NOT NULL,body TEXT DEFAULT '',kind TEXT DEFAULT 'info',created_at TEXT NOT NULL,read_at TEXT DEFAULT '');
+  CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,path TEXT NOT NULL,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL);
   """)
 def pw_hash(p,s): return hashlib.pbkdf2_hmac("sha256",p.encode(),s,240000).hex()
 def token_hash(t): return hashlib.sha256(t.encode()).hexdigest()
@@ -42,7 +49,7 @@ def make_token(uid):
 def user_dict(r): return {k:r[k] for k in ("id","name","email","department","role","status")}
 def body(h):
  n=int(h.headers.get("Content-Length","0"))
- if n>100000: raise ValueError("Payload trop volumineux")
+ if n>7500000: raise ValueError("Payload trop volumineux (maximum 5 Mo pour un fichier)")
  raw=h.rfile.read(n) if n else b"{}"
  x=json.loads(raw)
  if not isinstance(x,dict): raise ValueError("JSON objet attendu")
@@ -82,6 +89,11 @@ class Handler(BaseHTTPRequestHandler):
      rows=c.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id ORDER BY CASE t.status WHEN 'done' THEN 2 ELSE 0 END,t.due_date").fetchall();return self.send(200,[dict(x) for x in rows])
     if path=="/api/events":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM events ORDER BY starts_at").fetchall()])
     if path=="/api/members":return self.send(200,[user_dict(x) for x in c.execute("SELECT * FROM users ORDER BY name").fetchall()])
+    if path=="/api/notifications":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100",(u["id"],)).fetchall()])
+    if path=="/api/files":return self.send(200,[{k:r[k] for k in ("id","name","mime","size","created_at","user_id")} for r in c.execute("SELECT * FROM files ORDER BY id DESC LIMIT 100").fetchall()])
+    if path=="/api/ai/status":
+     row=c.execute("SELECT value FROM settings WHERE key='openrouter_key'").fetchone()
+     return self.send(200,{"configured":bool(row),"provider":"OpenRouter"})
     if path=="/api/messages":
      after=int(parse_qs(p.query).get("after",["0"])[0]);return self.send(200,[dict(x) for x in c.execute("SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id>? ORDER BY m.id DESC LIMIT 150",(after,)).fetchall()][::-1])
     if path=="/api/rtc-config":
