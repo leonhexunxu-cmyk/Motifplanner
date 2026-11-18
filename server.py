@@ -212,10 +212,12 @@ class Handler(BaseHTTPRequestHandler):
      if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
      return self.send(201,{"id":cur.lastrowid})
     if path=="/api/events":
+     if not has_perm(u,"manage_calendar"):return self.send(403,{"detail":"Droit de gestion du calendrier requis"})
      title=str(b.get("title","")).strip();start=str(b.get("starts_at",""));end=str(b.get("ends_at",""))
      if not title or not start or not end or end<=start:return self.send(400,{"detail":"Titre et dates cohérentes requis"})
      cur=c.execute("INSERT INTO events(title,starts_at,ends_at,location,kind,created_by) VALUES(?,?,?,?,?,?)",(title,start,end,str(b.get("location",""))[:200],str(b.get("kind","Équipe"))[:60],u["id"]));return self.send(201,{"id":cur.lastrowid})
     if path=="/api/messages":
+     if not has_perm(u,"use_messages"):return self.send(403,{"detail":"Accès à la messagerie non autorisé"})
      msg=str(b.get("body","")).strip()
      if not msg or len(msg)>4000:return self.send(400,{"detail":"Message vide ou trop long"})
      cur=c.execute("INSERT INTO messages(user_id,body,created_at) VALUES(?,?,?)",(u["id"],msg,now()))
@@ -223,6 +225,7 @@ class Handler(BaseHTTPRequestHandler):
       c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(member["id"],"Nouveau message",u["name"]+": "+msg[:160],"message",now()))
      return self.send(201,{"id":cur.lastrowid})
     if path=="/api/files":
+     if not has_perm(u,"share_files"):return self.send(403,{"detail":"Droit de partage de fichiers requis"})
      name=Path(str(b.get("name","fichier"))).name[:180]
      mime=str(b.get("mime","application/octet-stream")).lower()[:100]
      allowed=("image/png","image/jpeg","image/gif","image/webp","application/pdf","text/plain","application/zip")
@@ -246,6 +249,7 @@ class Handler(BaseHTTPRequestHandler):
      c.execute("INSERT INTO settings(key,value,updated_at) VALUES('openrouter_key',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(enc,now()))
      return self.send(200,{"ok":True,"configured":True})
     if path=="/api/ai/chat":
+     if not has_perm(u,"use_ai"):return self.send(403,{"detail":"Accès à l’assistant IA non autorisé"})
      row=c.execute("SELECT value FROM settings WHERE key='openrouter_key'").fetchone()
      if not row:return self.send(400,{"detail":"Clé OpenRouter non configurée par l’administrateur"})
      prompt=str(b.get("message","")).strip()
