@@ -47,6 +47,9 @@ def init():
   task_cols={r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()}
   if "project_id" not in task_cols:c.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER")
   c.execute("UPDATE users SET department='Direction' WHERE role='admin' AND (department IS NULL OR department='')")
+  c.execute("UPDATE users SET department='AI Tools' WHERE department='Développement'")
+  c.execute("UPDATE users SET department='AI Models and Datasets' WHERE department='Modèles & Datasets'")
+  c.execute("UPDATE users SET department='Marketing and Finance' WHERE department='Marketing & Finance'")
 def pw_hash(p,s): return hashlib.pbkdf2_hmac("sha256",p.encode(),s,240000).hex()
 def token_hash(t): return hashlib.sha256(t.encode()).hexdigest()
 def make_token(uid):
@@ -218,7 +221,10 @@ class Handler(BaseHTTPRequestHandler):
      scope=str(b.get("scope_department",u["department"] or "")).strip()[:80]
      stamps={"AI Tools":"ai_tools","AI Models and Datasets":"ai_models","AI Evaluation":"ai_evaluation","Marketing and Finance":"marketing_finance","Direction":"executive"}
      if scope not in stamps:return self.send(400,{"detail":"Département de validation invalide"})
-     payload={"description":str(b.get("description",""))[:5000],"due_date":due,"priority":b.get("priority","normal"),"project_id":b.get("project_id") or None,"assignee_id":b.get("assignee_id") or None}
+     assignee=b.get("assignee_id") or None
+     if assignee and int(assignee)!=u["id"] and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
+     if assignee and not c.execute("SELECT 1 FROM users WHERE id=?",(int(assignee),)).fetchone():return self.send(400,{"detail":"Membre assigné introuvable"})
+     payload={"description":str(b.get("description",""))[:5000],"due_date":due,"priority":b.get("priority","normal"),"project_id":b.get("project_id") or None,"assignee_id":assignee}
      cur=c.execute("INSERT INTO proposals(kind,title,scope_department,stamp_key,payload,created_by,created_at) VALUES(?,?,?,?,?,?,?)",("task",title,scope,stamps[scope],json.dumps(payload),u["id"],now()))
      for member in c.execute("SELECT id FROM users WHERE department=? AND id<>?",(scope,u["id"])).fetchall():c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(member["id"],"Proposition à valider",title,"approval",now()))
      return self.send(201,{"id":cur.lastrowid,"status":"pending","stamp_key":stamps[scope]})
