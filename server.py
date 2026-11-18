@@ -1,123 +1,167 @@
-#!/usr/bin/env python3
-"""Motif Planner API — stdlib only. Local/dev backend; bind to localhost by default."""
-from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
-from urllib.parse import urlparse
-import json, os, sqlite3, time, uuid
+import os, json, sqlite3, secrets, hashlib, hmac, time
+from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import urlparse, parse_qs
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
-DB = Path(os.environ.get("MOTIF_DB", ROOT / "motif-planner.sqlite3"))
-HOST = os.environ.get("MOTIF_HOST", "127.0.0.1")
-PORT = int(os.environ.get("PORT", "8787"))
-ALLOWED_ORIGIN = os.environ.get("MOTIF_ORIGIN", "*")
-
-def connect():
-    c = sqlite3.connect(DB)
-    c.row_factory = sqlite3.Row
-    c.execute("""CREATE TABLE IF NOT EXISTS records (
-        id TEXT PRIMARY KEY, kind TEXT NOT NULL, payload TEXT NOT NULL,
-        created_at REAL NOT NULL, updated_at REAL NOT NULL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS presence (
-        member_id TEXT PRIMARY KEY, payload TEXT NOT NULL, seen_at REAL NOT NULL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS calls (
-        id TEXT PRIMARY KEY, payload TEXT NOT NULL, created_at REAL NOT NULL)""")
-    c.execute("""CREATE TABLE IF NOT EXISTS ice (
-        id TEXT PRIMARY KEY, call_id TEXT NOT NULL, sender TEXT NOT NULL,
-        payload TEXT NOT NULL, created_at REAL NOT NULL)""")
-    c.commit()
-    return c
-
+DB=os.getenv("DATABASE_PATH","motif-planner.sqlite3")
+SECRET=os.getenv("MOTIF_SECRET_KEY","").encode()
+INVITE=os.getenv("MOTIF_INVITE_CODE","")
+FRONTEND=os.getenv("FRONTEND_ORIGIN","https://leonhexunxu-cmyk.github.io")
+PORT=int(os.getenv("PORT","8787"))
+def now(): return datetime.now(timezone.utc).isoformat()
+def db():
+ c=sqlite3.connect(DB,timeout=15);c.row_factory=sqlite3.Row;return c
+def init():
+ with db() as c:
+  c.executescript("""
+  PRAGMA journal_mode=WAL;
+  CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password TEXT NOT NULL,salt TEXT NOT NULL,department TEXT DEFAULT '',role TEXT DEFAULT 'member',status TEXT DEFAULT 'available',created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS invites(code_hash TEXT PRIMARY KEY,created_by INTEGER NOT NULL,used INTEGER DEFAULT 0,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY,title TEXT NOT NULL,description TEXT DEFAULT '',assignee_id INTEGER,due_date TEXT DEFAULT '',priority TEXT DEFAULT 'normal',status TEXT DEFAULT 'todo',created_by INTEGER NOT NULL,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,title TEXT NOT NULL,starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,location TEXT DEFAULT '',kind TEXT DEFAULT 'Équipe',created_by INTEGER NOT NULL);
+  CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY,created_by INTEGER NOT NULL,created_at TEXT NOT NULL,ended INTEGER DEFAULT 0);
+  CREATE TABLE IF NOT EXISTS signals(id INTEGER PRIMARY KEY,call_id TEXT NOT NULL,user_id INTEGER NOT NULL,kind TEXT NOT NULL,payload TEXT NOT NULL,created_at TEXT NOT NULL);
+  """)
+def pw_hash(p,s): return hashlib.pbkdf2_hmac("sha256",p.encode(),s,240000).hex()
+def token_hash(t): return hashlib.sha256(t.encode()).hexdigest()
+def make_token(uid):
+ t=secrets.token_urlsafe(36)
+ with db() as c:c.execute("INSERT INTO sessions VALUES(?,?,?)",(token_hash(t),uid,int(time.time())+60*60*24*14))
+ return t
+def user_dict(r): return {k:r[k] for k in ("id","name","email","department","role","status")}
+def body(h):
+ n=int(h.headers.get("Content-Length","0"))
+ if n>100000: raise ValueError("Payload trop volumineux")
+ raw=h.rfile.read(n) if n else b"{}"
+ x=json.loads(raw)
+ if not isinstance(x,dict): raise ValueError("JSON objet attendu")
+ return x
 class Handler(BaseHTTPRequestHandler):
-    server_version = "MotifPlanner/0.1"
-    def send(self, code, obj):
-        body = json.dumps(obj, ensure_ascii=False).encode()
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json; charset=utf-8")
-        self.send_header("Access-Control-Allow-Origin", ALLOWED_ORIGIN)
-        self.send_header("Access-Control-Allow-Headers", "Content-Type")
-        self.send_header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
-    def body(self):
-        n = int(self.headers.get("Content-Length", "0"))
-        if n > 1_000_000: raise ValueError("Payload too large")
-        return json.loads(self.rfile.read(n) or b"{}")
-    def do_OPTIONS(self):
-        self.send(204, {})
-    def do_GET(self):
-        p = urlparse(self.path).path.strip("/").split("/")
-        if p == ["health"]:
-            return self.send(200, {"ok": True, "service": "Motif Planner API", "time": time.time()})
-        c = connect()
-        try:
-            if len(p) == 1 and p[0] in ("tasks", "events", "messages", "members"):
-                rows = c.execute("SELECT id,payload,updated_at FROM records WHERE kind=? ORDER BY updated_at DESC", (p[0],)).fetchall()
-                return self.send(200, {"items":[{"id":r["id"], **json.loads(r["payload"]), "updated_at":r["updated_at"]} for r in rows]})
-            if p == ["presence"]:
-                rows = c.execute("SELECT member_id,payload,seen_at FROM presence").fetchall()
-                return self.send(200, {"items":[{"member_id":r["member_id"], **json.loads(r["payload"]), "seen_at":r["seen_at"]} for r in rows]})
-            if len(p) == 2 and p[0] == "calls":
-                row = c.execute("SELECT payload FROM calls WHERE id=?", (p[1],)).fetchone()
-                return self.send(200, json.loads(row["payload"]) if row else {})
-            if len(p) == 2 and p[0] == "calls" and p[1] == "": pass
-            if len(p) == 3 and p[0] == "calls" and p[2] == "ice":
-                rows = c.execute("SELECT id,sender,payload FROM ice WHERE call_id=? ORDER BY created_at", (p[1],)).fetchall()
-                return self.send(200, {"items":[{"id":r["id"],"sender":r["sender"],"candidate":json.loads(r["payload"])} for r in rows]})
-            return self.send(404, {"error":"Not found"})
-        finally: c.close()
-    def do_POST(self):
-        p = urlparse(self.path).path.strip("/").split("/")
-        try: data = self.body()
-        except Exception as e: return self.send(400, {"error":str(e)})
-        c = connect()
-        try:
-            now = time.time()
-            if len(p) == 1 and p[0] in ("tasks", "events", "messages", "members"):
-                rid = str(data.get("id") or uuid.uuid4())
-                c.execute("INSERT INTO records VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET payload=excluded.payload,updated_at=excluded.updated_at",
-                          (rid,p[0],json.dumps(data,ensure_ascii=False),now,now))
-                c.commit(); return self.send(201, {"ok":True,"id":rid})
-            if p == ["presence"]:
-                mid = str(data.get("member_id") or "")
-                if not mid: return self.send(400, {"error":"member_id required"})
-                c.execute("INSERT INTO presence VALUES(?,?,?) ON CONFLICT(member_id) DO UPDATE SET payload=excluded.payload,seen_at=excluded.seen_at",
-                          (mid,json.dumps(data,ensure_ascii=False),now)); c.commit()
-                return self.send(200, {"ok":True})
-            if p == ["calls"]:
-                cid = str(uuid.uuid4()); data.update({"id":cid,"created_at":now})
-                c.execute("INSERT INTO calls VALUES(?,?,?)",(cid,json.dumps(data),now)); c.commit()
-                return self.send(201, data)
-            if len(p) == 3 and p[0] == "calls" and p[2] == "ice":
-                iid = str(uuid.uuid4()); sender = str(data.get("sender") or "")
-                c.execute("INSERT INTO ice VALUES(?,?,?,?,?)",(iid,p[1],sender,json.dumps(data.get("candidate")),now)); c.commit()
-                return self.send(201, {"ok":True,"id":iid})
-            return self.send(404, {"error":"Not found"})
-        finally: c.close()
-    def do_PUT(self):
-        p = urlparse(self.path).path.strip("/").split("/")
-        if len(p) != 2 or p[0] != "calls": return self.send(404, {"error":"Not found"})
-        try: data = self.body()
-        except Exception as e: return self.send(400, {"error":str(e)})
-        c=connect()
-        try:
-            c.execute("UPDATE calls SET payload=? WHERE id=?",(json.dumps(data),p[1])); c.commit()
-            return self.send(200, {"ok":True})
-        finally: c.close()
-    def do_DELETE(self):
-        p=urlparse(self.path).path.strip("/").split("/")
-        if len(p)!=2 or p[0] not in ("tasks","events","messages","members"): return self.send(404,{"error":"Not found"})
-        c=connect()
-        try:
-            c.execute("DELETE FROM records WHERE id=? AND kind=?",(p[1],p[0])); c.commit()
-            return self.send(200,{"ok":True})
-        finally:c.close()
-    def log_message(self, fmt, *args):
-        print("%s - %s"%(self.log_date_time_string(),fmt%args))
-
-if __name__ == "__main__":
-    connect().close()
-    print(f"Motif Planner API listening on http://{HOST}:{PORT}")
-    print("WARNING: prototype API has no authentication. Keep it on localhost; do not expose publicly.")
-    ThreadingHTTPServer((HOST,PORT),Handler).serve_forever()
+ server_version="MotifPlanner/1.0"
+ def log_message(self,*a): print("%s - %s"%(self.address_string(),a[0]%a[1:]))
+ def send(self,status,data):
+  raw=json.dumps(data,ensure_ascii=False).encode()
+  self.send_response(status);self.send_header("Content-Type","application/json; charset=utf-8");self.send_header("Content-Length",str(len(raw)));self.send_header("Cache-Control","no-store");self.send_header("X-Content-Type-Options","nosniff");self.send_header("Access-Control-Allow-Origin",FRONTEND);self.send_header("Vary","Origin");self.send_header("Access-Control-Allow-Headers","Authorization, Content-Type");self.send_header("Access-Control-Allow-Methods","GET, POST, PATCH, DELETE, OPTIONS");self.end_headers();self.wfile.write(raw)
+ def do_OPTIONS(self):
+  self.send_response(204);self.send_header("Access-Control-Allow-Origin",FRONTEND);self.send_header("Access-Control-Allow-Headers","Authorization, Content-Type");self.send_header("Access-Control-Allow-Methods","GET, POST, PATCH, DELETE, OPTIONS");self.send_header("Access-Control-Max-Age","600");self.end_headers()
+ def auth(self):
+  v=self.headers.get("Authorization","")
+  if not v.startswith("Bearer "):return None
+  with db() as c:
+   r=c.execute("SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=? AND s.expires>?",(token_hash(v[7:]),int(time.time()))).fetchone()
+  return r
+ def require(self):
+  u=self.auth()
+  if not u: self.send(401,{"detail":"Session invalide ou expirée"});return None
+  return u
+ def do_GET(self):
+  try:
+   p=urlparse(self.path);path=p.path;u=self.require()
+   if not u:return
+   with db() as c:
+    if path=="/health":return self.send(200,{"ok":True,"service":"motif-planner"})
+    if path=="/api/auth/me":return self.send(200,{"user":user_dict(u)})
+    if path=="/api/tasks":
+     rows=c.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id ORDER BY CASE t.status WHEN 'done' THEN 2 ELSE 0 END,t.due_date").fetchall();return self.send(200,[dict(x) for x in rows])
+    if path=="/api/events":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM events ORDER BY starts_at").fetchall()])
+    if path=="/api/members":return self.send(200,[user_dict(x) for x in c.execute("SELECT * FROM users ORDER BY name").fetchall()])
+    if path=="/api/messages":
+     after=int(parse_qs(p.query).get("after",["0"])[0]);return self.send(200,[dict(x) for x in c.execute("SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id>? ORDER BY m.id DESC LIMIT 150",(after,)).fetchall()][::-1])
+    if path=="/api/rtc-config":
+     ice=[{"urls":"stun:stun.l.google.com:19302"}]
+     if os.getenv("TURN_URL") and os.getenv("TURN_USERNAME") and os.getenv("TURN_CREDENTIAL"):ice.append({"urls":os.environ["TURN_URL"],"username":os.environ["TURN_USERNAME"],"credential":os.environ["TURN_CREDENTIAL"]})
+     return self.send(200,{"iceServers":ice})
+    if path.startswith("/api/calls/") and path.endswith("/signals"):
+     cid=path.split("/")[3];after=int(parse_qs(p.query).get("after",["0"])[0])
+     if not c.execute("SELECT 1 FROM calls WHERE id=? AND ended=0",(cid,)).fetchone():return self.send(404,{"detail":"Appel introuvable"})
+     rows=c.execute("SELECT * FROM signals WHERE call_id=? AND user_id<>? AND id>? ORDER BY id",(cid,u["id"],after)).fetchall()
+     return self.send(200,[{"id":r["id"],"kind":r["kind"],"payload":json.loads(r["payload"])} for r in rows])
+   return self.send(404,{"detail":"Route inconnue"})
+  except Exception as e:return self.send(400,{"detail":str(e)})
+ def do_POST(self):
+  try:
+   path=urlparse(self.path).path;b=body(self)
+   if path=="/api/auth/register":
+    name=str(b.get("name","")).strip();email=str(b.get("email","")).strip().lower();pw=str(b.get("password",""));code=str(b.get("invite",""))
+    if len(name)<2 or len(email)>254 or "@" not in email or len(pw)<10:return self.send(400,{"detail":"Nom, email valide et mot de passe de 10 caractères minimum requis"})
+    with db() as c:
+     count=c.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+     if count==0:
+      if not INVITE or not hmac.compare_digest(code,INVITE):return self.send(403,{"detail":"Code de première activation invalide"})
+      role="admin"
+     else:
+      ch=hashlib.sha256(code.encode()).hexdigest()
+      inv=c.execute("SELECT code_hash FROM invites WHERE code_hash=? AND used=0",(ch,)).fetchone()
+      if not inv:return self.send(403,{"detail":"Invitation invalide ou déjà utilisée"})
+      c.execute("UPDATE invites SET used=1 WHERE code_hash=?",(ch,));role="member"
+     salt=secrets.token_bytes(16)
+     try:c.execute("INSERT INTO users(name,email,password,salt,role,created_at) VALUES(?,?,?,?,?,?)",(name,email,pw_hash(pw,salt),salt.hex(),role,now()))
+     except sqlite3.IntegrityError:return self.send(409,{"detail":"Cet email est déjà utilisé"})
+     uid=c.execute("SELECT id FROM users WHERE email=?",(email,)).fetchone()[0]
+    t=make_token(uid)
+    with db() as c:r=c.execute("SELECT * FROM users WHERE id=?",(uid,)).fetchone()
+    return self.send(201,{"token":t,"user":user_dict(r)})
+   if path=="/api/auth/login":
+    email=str(b.get("email","")).strip().lower();pw=str(b.get("password",""))
+    with db() as c:r=c.execute("SELECT * FROM users WHERE email=?",(email,)).fetchone()
+    if not r or not hmac.compare_digest(pw_hash(pw,bytes.fromhex(r["salt"])),r["password"]):return self.send(401,{"detail":"Identifiants incorrects"})
+    return self.send(200,{"token":make_token(r["id"]),"user":user_dict(r)})
+   u=self.require()
+   if not u:return
+   with db() as c:
+    if path=="/api/auth/logout":
+     c.execute("DELETE FROM sessions WHERE token_hash=?",(token_hash(self.headers.get("Authorization","")[7:]),));return self.send(200,{"ok":True})
+    if path=="/api/invites":
+     if u["role"] not in ("admin","manager"):return self.send(403,{"detail":"Permission insuffisante"})
+     code=str(b.get("code",""))
+     if len(code)<12:return self.send(400,{"detail":"Code invalide"})
+     c.execute("INSERT INTO invites(code_hash,created_by,created_at) VALUES(?,?,?)",(hashlib.sha256(code.encode()).hexdigest(),u["id"],now()));return self.send(201,{"ok":True})
+    if path=="/api/tasks":
+     title=str(b.get("title","")).strip()
+     if not title:return self.send(400,{"detail":"Titre requis"})
+     assignee=b.get("assignee_id") or None
+     if assignee and u["role"]=="member" and int(assignee)!=u["id"]:return self.send(403,{"detail":"Vous ne pouvez assigner qu’à vous-même"})
+     if u["role"]=="member" and assignee is None:assignee=u["id"]
+     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at) VALUES(?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,str(b.get("due_date",""))[:10],b.get("priority","normal"),u["id"],now()));return self.send(201,{"id":cur.lastrowid})
+    if path=="/api/events":
+     title=str(b.get("title","")).strip();start=str(b.get("starts_at",""));end=str(b.get("ends_at",""))
+     if not title or not start or not end or end<=start:return self.send(400,{"detail":"Titre et dates cohérentes requis"})
+     cur=c.execute("INSERT INTO events(title,starts_at,ends_at,location,kind,created_by) VALUES(?,?,?,?,?,?)",(title,start,end,str(b.get("location",""))[:200],str(b.get("kind","Équipe"))[:60],u["id"]));return self.send(201,{"id":cur.lastrowid})
+    if path=="/api/messages":
+     msg=str(b.get("body","")).strip()
+     if not msg or len(msg)>4000:return self.send(400,{"detail":"Message vide ou trop long"})
+     cur=c.execute("INSERT INTO messages(user_id,body,created_at) VALUES(?,?,?)",(u["id"],msg,now()));return self.send(201,{"id":cur.lastrowid})
+    if path=="/api/calls":
+     cid=secrets.token_urlsafe(16);c.execute("INSERT INTO calls(id,created_by,created_at) VALUES(?,?,?)",(cid,u["id"],now()));return self.send(201,{"id":cid})
+    if path.startswith("/api/calls/") and path.endswith("/signals"):
+     cid=path.split("/")[3]
+     if not c.execute("SELECT 1 FROM calls WHERE id=? AND ended=0",(cid,)).fetchone():return self.send(404,{"detail":"Appel introuvable"})
+     kind=str(b.get("kind",""));payload=b.get("payload")
+     if kind not in ("offer","answer","candidate") or payload is None:return self.send(400,{"detail":"Signal invalide"})
+     c.execute("INSERT INTO signals(call_id,user_id,kind,payload,created_at) VALUES(?,?,?,?,?)",(cid,u["id"],kind,json.dumps(payload),now()));return self.send(201,{"ok":True})
+   return self.send(404,{"detail":"Route inconnue"})
+  except Exception as e:return self.send(400,{"detail":str(e)})
+ def do_PATCH(self):
+  try:
+   u=self.require()
+   if not u:return
+   path=urlparse(self.path).path
+   if not path.startswith("/api/tasks/"):return self.send(404,{"detail":"Route inconnue"})
+   tid=int(path.rsplit("/",1)[1]);b=body(self)
+   with db() as c:
+    t=c.execute("SELECT * FROM tasks WHERE id=?",(tid,)).fetchone()
+    if not t:return self.send(404,{"detail":"Tâche introuvable"})
+    if u["role"]=="member" and t["assignee_id"]!=u["id"]:return self.send(403,{"detail":"Tâche non assignée à votre compte"})
+    allowed={"status","assignee_id","due_date","priority","title","description"}
+    changes={k:v for k,v in b.items() if k in allowed}
+    if u["role"]=="member":changes={k:v for k,v in changes.items() if k=="status"}
+    if not changes:return self.send(400,{"detail":"Aucun champ modifiable"})
+    c.execute("UPDATE tasks SET "+",".join(k+"=?" for k in changes)+" WHERE id=?",(*changes.values(),tid))
+    return self.send(200,{"ok":True})
+  except Exception as e:return self.send(400,{"detail":str(e)})
+if __name__=="__main__":
+ if not SECRET: print("WARNING: set MOTIF_SECRET_KEY before production")
+ init();print("Motif Planner API listening on",PORT);ThreadingHTTPServer(("0.0.0.0",PORT),Handler).serve_forever()
