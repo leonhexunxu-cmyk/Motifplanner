@@ -31,7 +31,8 @@ def init():
   CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY,name TEXT NOT NULL,email TEXT UNIQUE NOT NULL,password TEXT NOT NULL,salt TEXT NOT NULL,department TEXT DEFAULT '',role TEXT DEFAULT 'member',status TEXT DEFAULT 'available',created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id INTEGER NOT NULL,expires INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS invites(code_hash TEXT PRIMARY KEY,created_by INTEGER NOT NULL,used INTEGER DEFAULT 0,created_at TEXT NOT NULL);
-  CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY,title TEXT NOT NULL,description TEXT DEFAULT '',assignee_id INTEGER,due_date TEXT DEFAULT '',priority TEXT DEFAULT 'normal',status TEXT DEFAULT 'todo',created_by INTEGER NOT NULL,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS projects(id INTEGER PRIMARY KEY,name TEXT NOT NULL UNIQUE,description TEXT DEFAULT '',created_by INTEGER NOT NULL,created_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS tasks(id INTEGER PRIMARY KEY,title TEXT NOT NULL,description TEXT DEFAULT '',assignee_id INTEGER,due_date TEXT DEFAULT '',priority TEXT DEFAULT 'normal',status TEXT DEFAULT 'todo',created_by INTEGER NOT NULL,created_at TEXT NOT NULL,project_id INTEGER);
   CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY,title TEXT NOT NULL,starts_at TEXT NOT NULL,ends_at TEXT NOT NULL,location TEXT DEFAULT '',kind TEXT DEFAULT 'Équipe',created_by INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS messages(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,body TEXT NOT NULL,created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS calls(id TEXT PRIMARY KEY,created_by INTEGER NOT NULL,created_at TEXT NOT NULL,ended INTEGER DEFAULT 0);
@@ -40,13 +41,18 @@ def init():
   CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,path TEXT NOT NULL,created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL);
   """)
+  user_cols={r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
+  if "permissions" not in user_cols:c.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ''")
+  task_cols={r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()}
+  if "project_id" not in task_cols:c.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER")
+  c.execute("UPDATE users SET department='Direction' WHERE role='admin' AND (department IS NULL OR department='')")
 def pw_hash(p,s): return hashlib.pbkdf2_hmac("sha256",p.encode(),s,240000).hex()
 def token_hash(t): return hashlib.sha256(t.encode()).hexdigest()
 def make_token(uid):
  t=secrets.token_urlsafe(36)
  with db() as c:c.execute("INSERT INTO sessions VALUES(?,?,?)",(token_hash(t),uid,int(time.time())+60*60*24*14))
  return t
-def user_dict(r): return {k:r[k] for k in ("id","name","email","department","role","status")}
+def user_dict(r): return {**{k:r[k] for k in ("id","name","email","role","status")},"department":r["department"] or ("Direction" if r["role"]=="admin" else ""),"permissions":json.loads(r["permissions"] or "{}") if "permissions" in r.keys() else {}}
 def body(h):
  n=int(h.headers.get("Content-Length","0"))
  if n>7500000: raise ValueError("Payload trop volumineux (maximum 5 Mo pour un fichier)")
@@ -86,7 +92,8 @@ class Handler(BaseHTTPRequestHandler):
    with db() as c:
     if path=="/api/auth/me":return self.send(200,{"user":user_dict(u)})
     if path=="/api/tasks":
-     rows=c.execute("SELECT t.*,u.name assignee_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id ORDER BY CASE t.status WHEN 'done' THEN 2 ELSE 0 END,t.due_date").fetchall();return self.send(200,[dict(x) for x in rows])
+     rows=c.execute("SELECT t.*,u.name assignee_name,p.name project_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN projects p ON p.id=t.project_id ORDER BY CASE t.status WHEN 'done' THEN 2 ELSE 0 END,t.due_date").fetchall();return self.send(200,[dict(x) for x in rows])
+    if path=="/api/projects":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM projects ORDER BY name").fetchall()])
     if path=="/api/events":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM events ORDER BY starts_at").fetchall()])
     if path=="/api/members":return self.send(200,[user_dict(x) for x in c.execute("SELECT * FROM users ORDER BY name").fetchall()])
     if path=="/api/notifications":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100",(u["id"],)).fetchall()])
@@ -217,7 +224,7 @@ class Handler(BaseHTTPRequestHandler):
      prompt=str(b.get("message","")).strip()
      if not prompt or len(prompt)>6000:return self.send(400,{"detail":"Message vide ou trop long"})
      key=vault().decrypt(row["value"].encode()).decode()
-     payload=json.dumps({"model":"openai/gpt-4o-mini","messages":[{"role":"system","content":"Tu es l’assistant de travail de Motif AI. Réponds en français de façon claire, concise et professionnelle."},{"role":"user","content":prompt}],"max_tokens":900}).encode()
+     payload=json.dumps({"model":"baidu/ernie-5.5-flash-preview:free","messages":[{"role":"system","content":"Tu es l’assistant de travail de Motif AI. Réponds en français de façon claire, concise et professionnelle."},{"role":"user","content":prompt}],"max_tokens":900}).encode()
      req=urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",data=payload,headers={"Authorization":"Bearer "+key,"Content-Type":"application/json","HTTP-Referer":"https://motifplanner-api-7p28.onrender.com","X-Title":"Motif Planner"},method="POST")
      try:
       with urllib.request.urlopen(req,timeout=35) as response: result=json.loads(response.read())
