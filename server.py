@@ -101,6 +101,9 @@ class Handler(BaseHTTPRequestHandler):
     raw=file.read_bytes();self.send_response(200);self.send_header("Content-Type",mimetypes.guess_type(str(file))[0] or "application/octet-stream");self.send_header("Content-Length",str(len(raw)));self.send_header("Cache-Control","no-cache");self.send_header("X-Content-Type-Options","nosniff");self.end_headers();self.wfile.write(raw);return
    u=self.require()
    if not u:return
+   if path=="/api/messages" and not has_perm(u,"use_messages"):return self.send(403,{"detail":"Accès à la messagerie non autorisé"})
+   if (path=="/api/files" or path.startswith("/api/files/")) and not has_perm(u,"share_files"):return self.send(403,{"detail":"Accès aux fichiers non autorisé"})
+   if (path=="/api/rtc-config" or path.startswith("/api/calls/")) and not has_perm(u,"use_calls"):return self.send(403,{"detail":"Accès aux appels non autorisé"})
    with db() as c:
     if path=="/api/auth/me":return self.send(200,{"user":user_dict(u)})
     if path=="/api/tasks":
@@ -126,6 +129,7 @@ class Handler(BaseHTTPRequestHandler):
      if os.getenv("TURN_URL") and os.getenv("TURN_USERNAME") and os.getenv("TURN_CREDENTIAL"):ice.append({"urls":os.environ["TURN_URL"],"username":os.environ["TURN_USERNAME"],"credential":os.environ["TURN_CREDENTIAL"]})
      return self.send(200,{"iceServers":ice})
     if path.startswith("/api/calls/") and path.endswith("/signals"):
+     if not has_perm(u,"use_calls"):return self.send(403,{"detail":"Droit d’appel requis"})
      cid=path.split("/")[3];after=int(parse_qs(p.query).get("after",["0"])[0])
      if not c.execute("SELECT 1 FROM calls WHERE id=? AND ended=0",(cid,)).fetchone():return self.send(404,{"detail":"Appel introuvable"})
      rows=c.execute("SELECT * FROM signals WHERE call_id=? AND user_id<>? AND id>? ORDER BY id",(cid,u["id"],after)).fetchall()
@@ -286,6 +290,7 @@ class Handler(BaseHTTPRequestHandler):
      except urllib.error.HTTPError as err:return self.send(502,{"detail":"OpenRouter a refusé la requête (HTTP "+str(err.code)+")"})
      except Exception:return self.send(502,{"detail":"Impossible de contacter OpenRouter ou de traiter la réponse"})
     if path=="/api/calls":
+     if not has_perm(u,"use_calls"):return self.send(403,{"detail":"Droit d’appel requis"})
      cid=secrets.token_urlsafe(16);c.execute("INSERT INTO calls(id,created_by,created_at) VALUES(?,?,?)",(cid,u["id"],now()));return self.send(201,{"id":cid})
     if path.startswith("/api/calls/") and path.endswith("/end"):
      cid=path.split("/")[3]
