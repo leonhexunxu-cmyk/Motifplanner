@@ -64,3 +64,18 @@ button:focus-visible{outline:3px solid #0071e355;outline-offset:2px}
 .permission{display:flex;align-items:center;gap:8px}
 .permission input{width:auto}
 @media(max-width:650px){.calendar-week{grid-template-columns:repeat(7,minmax(112px,1fr));overflow-x:auto}.permissions{grid-template-columns:1fr}}
+
+
+/* Planning, project labels and permission controls */
+.calendar-day{grid-template-columns:minmax(0,1fr)}
+.calendar-week{grid-template-columns:repeat(7,minmax(0,1fr))}
+.day{min-width:0}
+.dayhead{display:flex;align-items:center;justify-content:space-between;gap:5px}
+.dayhead b{margin:0;overflow:hidden;text-overflow:ellipsis}
+.mini-add{min-height:28px;padding:2px 8px;border-radius:7px;color:var(--accent);font-size:17px;line-height:1}
+.tasktag{display:block;margin:4px 0;padding:4px 6px;border-radius:5px;background:#eef7f0;color:#286b3e;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.project-label{display:inline-block!important;margin-top:5px!important;padding:2px 7px;border-radius:6px;background:#f1f1f4;color:#55555b!important;font-size:11px!important}
+#rightsForm label:has(input[type=checkbox]){display:flex;align-items:center;gap:9px;color:var(--text);font-size:14px}
+#rightsForm input[type=checkbox]{width:18px;height:18px;flex:0 0 auto}
+#profileForm{max-width:520px}
+@media(max-width:650px){.calendar-week{grid-template-columns:repeat(7,minmax(115px,1fr));overflow-x:auto}.calendar-day .day{min-height:180px}.calendar-week .day{min-height:130px}.calendar-toolbar{align-items:flex-start}.calendar-toolbar .toolbar{width:100%}}
