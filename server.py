@@ -128,6 +128,23 @@ class Handler(BaseHTTPRequestHandler):
    with db() as c:
     if path=="/api/auth/logout":
      c.execute("DELETE FROM sessions WHERE token_hash=?",(token_hash(self.headers.get("Authorization","")[7:]),));return self.send(200,{"ok":True})
+    if path=="/api/admin/users":
+     if u["role"]!="admin":return self.send(403,{"detail":"Réservé à l’administrateur"})
+     name=str(b.get("name","")).strip()
+     email=str(b.get("email","")).strip().lower()
+     pw=str(b.get("password",""))
+     department=str(b.get("department","")).strip()[:80]
+     role=str(b.get("role","member"))
+     if len(name)<2 or len(email)>254 or "@" not in email or len(pw)<10 or len(pw)>128:
+      return self.send(400,{"detail":"Nom, email valide et mot de passe de 10 caractères minimum requis"})
+     if not department:return self.send(400,{"detail":"Département requis"})
+     if role not in ("admin","manager","member"):return self.send(400,{"detail":"Rôle invalide"})
+     salt=secrets.token_bytes(16)
+     try:
+      cur=c.execute("INSERT INTO users(name,email,password,salt,department,role,created_at) VALUES(?,?,?,?,?,?,?)",(name,email,pw_hash(pw,salt),salt.hex(),department,role,now()))
+     except sqlite3.IntegrityError:return self.send(409,{"detail":"Cet email est déjà utilisé"})
+     created=c.execute("SELECT * FROM users WHERE id=?",(cur.lastrowid,)).fetchone()
+     return self.send(201,{"user":user_dict(created)})
     if path=="/api/invites":
      if u["role"] not in ("admin","manager"):return self.send(403,{"detail":"Permission insuffisante"})
      code=str(b.get("code",""))
