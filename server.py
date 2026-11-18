@@ -168,7 +168,9 @@ class Handler(BaseHTTPRequestHandler):
      assignee=b.get("assignee_id") or None
      if assignee and u["role"]=="member" and int(assignee)!=u["id"]:return self.send(403,{"detail":"Vous ne pouvez assigner qu’à vous-même"})
      if u["role"]=="member" and assignee is None:assignee=u["id"]
-     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at) VALUES(?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,str(b.get("due_date",""))[:10],b.get("priority","normal"),u["id"],now()));return self.send(201,{"id":cur.lastrowid})
+     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at) VALUES(?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,str(b.get("due_date",""))[:10],b.get("priority","normal"),u["id"],now()))
+     if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
+     return self.send(201,{"id":cur.lastrowid})
     if path=="/api/events":
      title=str(b.get("title","")).strip();start=str(b.get("starts_at",""));end=str(b.get("ends_at",""))
      if not title or not start or not end or end<=start:return self.send(400,{"detail":"Titre et dates cohérentes requis"})
@@ -176,7 +178,46 @@ class Handler(BaseHTTPRequestHandler):
     if path=="/api/messages":
      msg=str(b.get("body","")).strip()
      if not msg or len(msg)>4000:return self.send(400,{"detail":"Message vide ou trop long"})
-     cur=c.execute("INSERT INTO messages(user_id,body,created_at) VALUES(?,?,?)",(u["id"],msg,now()));return self.send(201,{"id":cur.lastrowid})
+     cur=c.execute("INSERT INTO messages(user_id,body,created_at) VALUES(?,?,?)",(u["id"],msg,now()))
+     for member in c.execute("SELECT id FROM users WHERE id<>?",(u["id"],)).fetchall():
+      c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(member["id"],"Nouveau message",u["name"]+": "+msg[:160],"message",now()))
+     return self.send(201,{"id":cur.lastrowid})
+    if path=="/api/files":
+     name=Path(str(b.get("name","fichier"))).name[:180]
+     mime=str(b.get("mime","application/octet-stream")).lower()[:100]
+     allowed=("image/png","image/jpeg","image/gif","image/webp","application/pdf","text/plain","application/zip")
+     if mime not in allowed:return self.send(400,{"detail":"Type de fichier non autorisé"})
+     try: raw=base64.b64decode(str(b.get("data","")),validate=True)
+     except Exception:return self.send(400,{"detail":"Fichier illisible"})
+     if not raw or len(raw)>5*1024*1024:return self.send(400,{"detail":"Fichier vide ou supérieur à 5 Mo"})
+     folder=Path("uploads");folder.mkdir(exist_ok=True);dest=folder/secrets.token_hex(16);dest.write_bytes(raw)
+     cur=c.execute("INSERT INTO files(user_id,name,mime,size,path,created_at) VALUES(?,?,?,?,?,?)",(u["id"],name,mime,len(raw),str(dest),now()))
+     for member in c.execute("SELECT id FROM users WHERE id<>?",(u["id"],)).fetchall():
+      c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(member["id"],"Fichier partagé",u["name"]+" a partagé "+name,"file",now()))
+     return self.send(201,{"id":cur.lastrowid})
+    if path=="/api/notifications/read":
+     c.execute("UPDATE notifications SET read_at=? WHERE id=? AND user_id=?",(now(),int(b.get("id",0)),u["id"]))
+     return self.send(200,{"ok":True})
+    if path=="/api/settings/ai-key":
+     if u["role"]!="admin":return self.send(403,{"detail":"Réservé à l’administrateur"})
+     key=str(b.get("key","")).strip()
+     if not key.startswith("sk-or-") or len(key)>500:return self.send(400,{"detail":"Clé OpenRouter invalide"})
+     enc=vault().encrypt(key.encode()).decode()
+     c.execute("INSERT INTO settings(key,value,updated_at) VALUES('openrouter_key',?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value,updated_at=excluded.updated_at",(enc,now()))
+     return self.send(200,{"ok":True,"configured":True})
+    if path=="/api/ai/chat":
+     row=c.execute("SELECT value FROM settings WHERE key='openrouter_key'").fetchone()
+     if not row:return self.send(400,{"detail":"Clé OpenRouter non configurée par l’administrateur"})
+     prompt=str(b.get("message","")).strip()
+     if not prompt or len(prompt)>6000:return self.send(400,{"detail":"Message vide ou trop long"})
+     key=vault().decrypt(row["value"].encode()).decode()
+     payload=json.dumps({"model":"openai/gpt-4o-mini","messages":[{"role":"system","content":"Tu es l’assistant de travail de Motif AI. Réponds en français de façon claire, concise et professionnelle."},{"role":"user","content":prompt}],"max_tokens":900}).encode()
+     req=urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",data=payload,headers={"Authorization":"Bearer "+key,"Content-Type":"application/json","HTTP-Referer":"https://motifplanner-api-7p28.onrender.com","X-Title":"Motif Planner"},method="POST")
+     try:
+      with urllib.request.urlopen(req,timeout=35) as response: result=json.loads(response.read())
+      return self.send(200,{"answer":result["choices"][0]["message"]["content"]})
+     except urllib.error.HTTPError as err:return self.send(502,{"detail":"OpenRouter a refusé la requête (HTTP "+str(err.code)+")"})
+     except Exception:return self.send(502,{"detail":"Impossible de contacter OpenRouter"})
     if path=="/api/calls":
      cid=secrets.token_urlsafe(16);c.execute("INSERT INTO calls(id,created_by,created_at) VALUES(?,?,?)",(cid,u["id"],now()));return self.send(201,{"id":cid})
     if path.startswith("/api/calls/") and path.endswith("/end"):
