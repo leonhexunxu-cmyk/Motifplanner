@@ -40,6 +40,7 @@ def init():
   CREATE TABLE IF NOT EXISTS notifications(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,title TEXT NOT NULL,body TEXT DEFAULT '',kind TEXT DEFAULT 'info',created_at TEXT NOT NULL,read_at TEXT DEFAULT '');
   CREATE TABLE IF NOT EXISTS files(id INTEGER PRIMARY KEY,user_id INTEGER NOT NULL,name TEXT NOT NULL,mime TEXT NOT NULL,size INTEGER NOT NULL,path TEXT NOT NULL,created_at TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL,updated_at TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS proposals(id INTEGER PRIMARY KEY,kind TEXT NOT NULL,title TEXT NOT NULL,scope_department TEXT NOT NULL,stamp_key TEXT NOT NULL,payload TEXT NOT NULL,created_by INTEGER NOT NULL,created_at TEXT NOT NULL,status TEXT DEFAULT 'pending',decided_by INTEGER,decided_at TEXT,decision_note TEXT DEFAULT '');
   """)
   user_cols={r[1] for r in c.execute("PRAGMA table_info(users)").fetchall()}
   if "permissions" not in user_cols:c.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ''")
@@ -52,7 +53,7 @@ def make_token(uid):
  t=secrets.token_urlsafe(36)
  with db() as c:c.execute("INSERT INTO sessions VALUES(?,?,?)",(token_hash(t),uid,int(time.time())+60*60*24*14))
  return t
-PERM_KEYS=("create_tasks","assign_tasks","manage_projects","manage_calendar","share_files","use_ai","use_messages","use_calls")
+PERM_KEYS=("create_tasks","assign_tasks","manage_projects","manage_calendar","share_files","use_ai","use_messages","use_calls","approve_department")
 def default_permissions(role):
  return {k:(role=="admin" or k in ("create_tasks","use_ai","share_files","use_messages","use_calls")) for k in PERM_KEYS}
 def has_perm(u,key):
@@ -109,6 +110,10 @@ class Handler(BaseHTTPRequestHandler):
     if path=="/api/tasks":
      rows=c.execute("SELECT t.*,u.name assignee_name,p.name project_name FROM tasks t LEFT JOIN users u ON u.id=t.assignee_id LEFT JOIN projects p ON p.id=t.project_id ORDER BY CASE t.status WHEN 'done' THEN 2 ELSE 0 END,t.due_date").fetchall();return self.send(200,[dict(x) for x in rows])
     if path=="/api/projects":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM projects ORDER BY name").fetchall()])
+    if path=="/api/proposals":
+     if u["role"]=="admin": rows=c.execute("SELECT p.*,u.name creator_name FROM proposals p JOIN users u ON u.id=p.created_by ORDER BY CASE p.status WHEN 'pending' THEN 0 ELSE 1 END,p.id DESC LIMIT 200").fetchall()
+     else: rows=c.execute("SELECT p.*,u.name creator_name FROM proposals p JOIN users u ON u.id=p.created_by WHERE p.created_by=? OR (p.scope_department=? AND p.status='pending') ORDER BY CASE p.status WHEN 'pending' THEN 0 ELSE 1 END,p.id DESC LIMIT 200",(u["id"],u["department"])).fetchall()
+     return self.send(200,[{**dict(r),"payload":json.loads(r["payload"]),"can_approve":bool(r["status"]=="pending" and (u["role"]=="admin" or (has_perm(u,"approve_department") and u["department"]==r["scope_department"])))} for r in rows])
     if path=="/api/events":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM events ORDER BY starts_at").fetchall()])
     if path=="/api/members":return self.send(200,[user_dict(x) for x in c.execute("SELECT * FROM users ORDER BY name").fetchall()])
     if path=="/api/notifications":return self.send(200,[dict(x) for x in c.execute("SELECT * FROM notifications WHERE user_id=? ORDER BY id DESC LIMIT 100",(u["id"],)).fetchall()])
@@ -204,6 +209,34 @@ class Handler(BaseHTTPRequestHandler):
      if not department:return self.send(400,{"detail":"Un département est obligatoire"})
      c.execute("UPDATE users SET department=? WHERE id=?",(department,u["id"]))
      return self.send(200,{"user":user_dict(c.execute("SELECT * FROM users WHERE id=?",(u["id"],)).fetchone())})
+    if path=="/api/proposals":
+     if not has_perm(u,"create_tasks"):return self.send(403,{"detail":"Droit de création de propositions requis"})
+     title=str(b.get("title","")).strip()[:180];due=str(b.get("due_date",""))[:10]
+     try:datetime.strptime(due,"%Y-%m-%d")
+     except Exception:return self.send(400,{"detail":"Une date valide est obligatoire"})
+     if not title:return self.send(400,{"detail":"Titre requis"})
+     scope=str(b.get("scope_department",u["department"] or "")).strip()[:80]
+     stamps={"AI Tools":"ai_tools","AI Models and Datasets":"ai_models","AI Evaluation":"ai_evaluation","Marketing and Finance":"marketing_finance","Direction":"executive"}
+     if scope not in stamps:return self.send(400,{"detail":"Département de validation invalide"})
+     payload={"description":str(b.get("description",""))[:5000],"due_date":due,"priority":b.get("priority","normal"),"project_id":b.get("project_id") or None,"assignee_id":b.get("assignee_id") or None}
+     cur=c.execute("INSERT INTO proposals(kind,title,scope_department,stamp_key,payload,created_by,created_at) VALUES(?,?,?,?,?,?,?)",("task",title,scope,stamps[scope],json.dumps(payload),u["id"],now()))
+     for member in c.execute("SELECT id FROM users WHERE department=? AND id<>?",(scope,u["id"])).fetchall():c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(member["id"],"Proposition à valider",title,"approval",now()))
+     return self.send(201,{"id":cur.lastrowid,"status":"pending","stamp_key":stamps[scope]})
+    if path=="/api/proposals/decision":
+     pid=int(b.get("id",0));decision=str(b.get("decision",""));note=str(b.get("note",""))[:1000]
+     if decision not in ("approved","rejected"):return self.send(400,{"detail":"Décision invalide"})
+     proposal=c.execute("SELECT * FROM proposals WHERE id=?",(pid,)).fetchone()
+     if not proposal:return self.send(404,{"detail":"Proposition introuvable"})
+     if proposal["status"]!="pending":return self.send(409,{"detail":"Cette proposition a déjà été traitée"})
+     if u["role"]!="admin" and (not has_perm(u,"approve_department") or u["department"]!=proposal["scope_department"]):return self.send(403,{"detail":"Cette proposition est hors de votre périmètre départemental"})
+     if decision=="approved" and proposal["kind"]=="task":
+      data=json.loads(proposal["payload"]);assignee=data.get("assignee_id")
+      if assignee and not c.execute("SELECT 1 FROM users WHERE id=?",(int(assignee),)).fetchone():assignee=None
+      cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(proposal["title"],data.get("description",""),assignee,data["due_date"],data.get("priority","normal"),proposal["created_by"],now(),data.get("project_id")))
+      if assignee:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Tâche approuvée",proposal["title"],"task",now()))
+     c.execute("UPDATE proposals SET status=?,decided_by=?,decided_at=?,decision_note=? WHERE id=?",(decision,u["id"],now(),note,pid))
+     c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(proposal["created_by"],"Proposition "+("approuvée" if decision=="approved" else "refusée"),proposal["title"],"approval",now()))
+     return self.send(200,{"ok":True,"status":decision})
     if path=="/api/tasks":
      if not has_perm(u,"create_tasks"):return self.send(403,{"detail":"Droit de création de tâches requis"})
      title=str(b.get("title","")).strip()
@@ -282,8 +315,11 @@ class Handler(BaseHTTPRequestHandler):
        if u["role"]=="member" and assignee is None:assignee=u["id"]
        project_id=args.get("project_id") or None
        if project_id and not c.execute("SELECT 1 FROM projects WHERE id=?",(int(project_id),)).fetchone():project_id=None
-       cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(title,str(args.get("description",""))[:5000],assignee,due,args.get("priority","normal"),u["id"],now(),project_id))
-       created={"id":cur.lastrowid,"title":title,"due_date":due}
+       scope=str(u["department"] or "AI Tools")
+       stamp={"AI Tools":"ai_tools","AI Models and Datasets":"ai_models","AI Evaluation":"ai_evaluation","Marketing and Finance":"marketing_finance","Direction":"executive"}.get(scope,"ai_tools")
+       proposal_payload={"description":str(args.get("description",""))[:5000],"due_date":due,"priority":args.get("priority","normal"),"project_id":project_id,"assignee_id":assignee}
+       cur=c.execute("INSERT INTO proposals(kind,title,scope_department,stamp_key,payload,created_by,created_at) VALUES(?,?,?,?,?,?,?)",("task",title,scope,stamp,json.dumps(proposal_payload),u["id"],now()))
+       created={"id":cur.lastrowid,"title":title,"due_date":due,"status":"pending approval"}
        if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
       answer=msg.get("content") or ("Tâche créée et ajoutée au planning." if created else "Je n’ai pas pu générer de réponse.")
       return self.send(200,{"answer":answer,"created_task":created})
