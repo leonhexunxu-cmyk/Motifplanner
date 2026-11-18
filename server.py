@@ -94,6 +94,12 @@ class Handler(BaseHTTPRequestHandler):
     if path=="/api/ai/status":
      row=c.execute("SELECT value FROM settings WHERE key='openrouter_key'").fetchone()
      return self.send(200,{"configured":bool(row),"provider":"OpenRouter"})
+    if path.startswith("/api/files/") and path.endswith("/download"):
+     fid=int(path.split("/")[3]);r=c.execute("SELECT * FROM files WHERE id=?",(fid,)).fetchone()
+     if not r:return self.send(404,{"detail":"Fichier introuvable"})
+     f=Path(r["path"])
+     if not f.is_file():return self.send(404,{"detail":"Fichier indisponible"})
+     raw=f.read_bytes();self.send_response(200);self.send_header("Content-Type",r["mime"]);self.send_header("Content-Length",str(len(raw)));self.send_header("Content-Disposition","attachment; filename="+r["name"].replace('"',''));self.send_header("Cache-Control","no-store");self.send_header("X-Content-Type-Options","nosniff");self.end_headers();self.wfile.write(raw);return
     if path=="/api/messages":
      after=int(parse_qs(p.query).get("after",["0"])[0]);return self.send(200,[dict(x) for x in c.execute("SELECT m.*,u.name sender_name FROM messages m JOIN users u ON u.id=m.user_id WHERE m.id>? ORDER BY m.id DESC LIMIT 150",(after,)).fetchall()][::-1])
     if path=="/api/rtc-config":
