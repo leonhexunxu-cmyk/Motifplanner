@@ -204,12 +204,15 @@ class Handler(BaseHTTPRequestHandler):
      if not has_perm(u,"create_tasks"):return self.send(403,{"detail":"Droit de création de tâches requis"})
      title=str(b.get("title","")).strip()
      if not title:return self.send(400,{"detail":"Titre requis"})
+     due=str(b.get("due_date",""))[:10]
+     try:datetime.strptime(due,"%Y-%m-%d")
+     except Exception:return self.send(400,{"detail":"Une date valide est obligatoire pour planifier la tâche"})
      assignee=b.get("assignee_id") or None
      if assignee and int(assignee)!=u["id"] and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
      if u["role"]=="member" and assignee is None:assignee=u["id"]
      project_id=b.get("project_id") or None
      if project_id and not c.execute("SELECT 1 FROM projects WHERE id=?",(int(project_id),)).fetchone():return self.send(400,{"detail":"Projet introuvable"})
-     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,str(b.get("due_date",""))[:10],b.get("priority","normal"),u["id"],now(),project_id))
+     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,due,b.get("priority","normal"),u["id"],now(),project_id))
      if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
      return self.send(201,{"id":cur.lastrowid})
     if path=="/api/events":
@@ -267,7 +270,9 @@ class Handler(BaseHTTPRequestHandler):
        args=json.loads(call["function"].get("arguments","{}"))
        if not has_perm(u,"create_tasks"):return self.send(403,{"detail":"Droit de création de tâches requis"})
        title=str(args.get("title","")).strip()[:180];due=str(args.get("due_date",""))[:10]
-       if not title or len(due)!=10 or due[4:5]!="-" or due[7:8]!="-":return self.send(400,{"detail":"Le titre et une date valide sont requis pour créer la tâche"})
+       try:datetime.strptime(due,"%Y-%m-%d")
+       except Exception:return self.send(400,{"detail":"Le titre et une date valide sont requis pour créer la tâche"})
+       if not title:return self.send(400,{"detail":"Titre requis"})
        assignee=args.get("assignee_id") or None
        if assignee and int(assignee)!=u["id"] and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
        if u["role"]=="member" and assignee is None:assignee=u["id"]
@@ -324,6 +329,11 @@ class Handler(BaseHTTPRequestHandler):
     if not changes:return self.send(400,{"detail":"Aucun champ modifiable"})
     if "status" in changes and changes["status"] not in ("todo","doing","done"):return self.send(400,{"detail":"Statut invalide"})
     if "priority" in changes and changes["priority"] not in ("low","normal","high"):return self.send(400,{"detail":"Priorité invalide"})
+    if "assignee_id" in changes and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
+    if "due_date" in changes:
+     try:datetime.strptime(str(changes["due_date"]),"%Y-%m-%d")
+     except Exception:return self.send(400,{"detail":"Date invalide"})
+    if "project_id" in b:changes["project_id"]=b.get("project_id") or None
     c.execute("UPDATE tasks SET "+",".join(k+"=?" for k in changes)+" WHERE id=?",(*changes.values(),tid))
     return self.send(200,{"ok":True})
   except Exception as e:return self.send(400,{"detail":str(e)})
