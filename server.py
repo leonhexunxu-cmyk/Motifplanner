@@ -46,6 +46,7 @@ def init():
   if "permissions" not in user_cols:c.execute("ALTER TABLE users ADD COLUMN permissions TEXT DEFAULT ''")
   task_cols={r[1] for r in c.execute("PRAGMA table_info(tasks)").fetchall()}
   if "project_id" not in task_cols:c.execute("ALTER TABLE tasks ADD COLUMN project_id INTEGER")
+  if "due_time" not in task_cols:c.execute("ALTER TABLE tasks ADD COLUMN due_time TEXT DEFAULT ''")
   c.execute("UPDATE users SET department='Direction' WHERE role='admin' AND (department IS NULL OR department='')")
   c.execute("UPDATE users SET department='AI Tools' WHERE department='Développement'")
   c.execute("UPDATE users SET department='AI Models and Datasets' WHERE department='Modèles & Datasets'")
@@ -224,7 +225,11 @@ class Handler(BaseHTTPRequestHandler):
      assignee=b.get("assignee_id") or None
      if assignee and int(assignee)!=u["id"] and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
      if assignee and not c.execute("SELECT 1 FROM users WHERE id=?",(int(assignee),)).fetchone():return self.send(400,{"detail":"Membre assigné introuvable"})
-     payload={"description":str(b.get("description",""))[:5000],"due_date":due,"priority":b.get("priority","normal"),"project_id":b.get("project_id") or None,"assignee_id":assignee}
+     due_time=str(b.get("due_time","")).strip()[:5]
+     if due_time:
+      try:datetime.strptime(due_time,"%H:%M")
+      except Exception:return self.send(400,{"detail":"Heure invalide"})
+     payload={"description":str(b.get("description",""))[:5000],"due_date":due,"due_time":due_time,"priority":b.get("priority","normal"),"project_id":b.get("project_id") or None,"assignee_id":assignee}
      cur=c.execute("INSERT INTO proposals(kind,title,scope_department,stamp_key,payload,created_by,created_at) VALUES(?,?,?,?,?,?,?)",("task",title,scope,stamps[scope],json.dumps(payload),u["id"],now()))
      for member in c.execute("SELECT id FROM users WHERE department=? AND id<>?",(scope,u["id"])).fetchall():c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(member["id"],"Proposition à valider",title,"approval",now()))
      return self.send(201,{"id":cur.lastrowid,"status":"pending","stamp_key":stamps[scope]})
@@ -238,7 +243,7 @@ class Handler(BaseHTTPRequestHandler):
      if decision=="approved" and proposal["kind"]=="task":
       data=json.loads(proposal["payload"]);assignee=data.get("assignee_id")
       if assignee and not c.execute("SELECT 1 FROM users WHERE id=?",(int(assignee),)).fetchone():assignee=None
-      cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(proposal["title"],data.get("description",""),assignee,data["due_date"],data.get("priority","normal"),proposal["created_by"],now(),data.get("project_id")))
+      cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id,due_time) VALUES(?,?,?,?,?,?,?,?,?)",(proposal["title"],data.get("description",""),assignee,data["due_date"],data.get("priority","normal"),proposal["created_by"],now(),data.get("project_id"),data.get("due_time","")))
       if assignee:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Tâche approuvée",proposal["title"],"task",now()))
      c.execute("UPDATE proposals SET status=?,decided_by=?,decided_at=?,decision_note=? WHERE id=?",(decision,u["id"],now(),note,pid))
      c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(proposal["created_by"],"Proposition "+("approuvée" if decision=="approved" else "refusée"),proposal["title"],"approval",now()))
@@ -255,7 +260,11 @@ class Handler(BaseHTTPRequestHandler):
      if u["role"]=="member" and assignee is None:assignee=u["id"]
      project_id=b.get("project_id") or None
      if project_id and not c.execute("SELECT 1 FROM projects WHERE id=?",(int(project_id),)).fetchone():return self.send(400,{"detail":"Projet introuvable"})
-     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,due,b.get("priority","normal"),u["id"],now(),project_id))
+     due_time=str(b.get("due_time","")).strip()[:5]
+     if due_time:
+      try:datetime.strptime(due_time,"%H:%M")
+      except Exception:return self.send(400,{"detail":"Heure invalide"})
+     cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id,due_time) VALUES(?,?,?,?,?,?,?,?,?)",(title,str(b.get("description",""))[:5000],assignee,due,b.get("priority","normal"),u["id"],now(),project_id,due_time))
      if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
      return self.send(201,{"id":cur.lastrowid})
     if path=="/api/events":
