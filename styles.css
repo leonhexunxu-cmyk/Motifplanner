@@ -7,3 +7,49 @@ input,select,textarea{width:100%;background:var(--surface);color:var(--text);bor
 .calendar{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:6px}.day{min-height:100px;padding:9px;background:var(--surface);border:1px solid var(--line);border-radius:10px;font-size:12px}.day b{display:block;margin-bottom:6px;color:#55555b}.eventtag{display:block;margin:4px 0;padding:4px 6px;border-radius:5px;background:var(--accent-soft);color:#075eb8;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.messages{height:min(58vh,570px);overflow:auto;display:flex;flex-direction:column;gap:9px;padding:14px;background:var(--surface-soft);border:1px solid var(--line);border-radius:12px}.bubble{max-width:80%;padding:10px 13px;border-radius:13px;background:#ededf0}.bubble.mine{align-self:flex-end;background:var(--accent-soft);border:1px solid #d5e8ff}.bubble small{display:block;color:var(--muted);font-size:11px;margin-top:4px}.compose{display:flex;gap:8px;margin-top:10px}.compose input{flex:1}.notice{padding:11px 13px;background:#f4f8ff;border:1px solid #dceaff;border-radius:9px;color:#235b91;font-size:13px}.error{color:var(--red)}.success{color:var(--green)}.hidden{display:none!important}.empty{padding:30px;text-align:center;color:var(--muted);border:1px dashed #d8d8dd;border-radius:12px;background:#ffffff80}.modal{position:fixed;inset:0;background:#0006;backdrop-filter:blur(8px);display:grid;place-items:center;padding:16px;z-index:10}.modalbox{width:min(560px,100%);max-height:90vh;overflow:auto;background:var(--surface);border:1px solid #ffffff80;border-radius:18px;padding:22px;box-shadow:0 24px 80px #0002}.modalhead{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}.modalhead h2{margin:0;font-size:20px;letter-spacing:-.4px}.status{color:var(--green)}
 @media(max-width:850px){.shell{grid-template-columns:1fr}.side{position:sticky;top:0;z-index:4;padding:8px 10px;border-right:0;border-bottom:1px solid var(--line);background:#fbfbfceF;backdrop-filter:blur(18px)}.brand{display:none}.nav{display:flex;overflow:auto}.nav button{white-space:nowrap;padding:8px 11px}.sidefoot{display:none}.main{padding:22px 14px}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.grid{grid-template-columns:1fr 1fr;gap:9px}.stat{padding:13px}.stat strong{font-size:23px}.formgrid{grid-template-columns:1fr}.formgrid .wide{grid-column:auto}.day{min-height:76px;padding:5px;font-size:10px}.eventtag{font-size:9px}.top h1{font-size:24px}.main{padding:19px 11px}.auth{margin:5vh 14px;padding:23px}.item{padding:12px;align-items:flex-start}.item .toolbar{justify-content:flex-end}}
+
+
+/* Motif Planner responsive workspace refinement */
+button{min-height:42px;font-weight:550;touch-action:manipulation}
+button:focus-visible{outline:3px solid #0071e355;outline-offset:2px}
+.nav button{min-height:42px}
+.upload{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:14px}
+.ai-reply{white-space:pre-wrap;min-height:130px;max-height:48vh;overflow:auto;padding:16px;border:1px solid var(--line);border-radius:12px;background:var(--surface-soft);color:var(--text)}
+.item button{flex-shrink:0}
+@media(max-width:850px){
+ .side{position:sticky;top:0;padding:7px 8px}
+ .nav{display:flex;overflow-x:auto;overscroll-behavior-x:contain;scrollbar-width:none;gap:5px;padding-bottom:2px}
+ .nav::-webkit-scrollbar{display:none}
+ .nav button{flex:0 0 auto;white-space:nowrap;padding:8px 12px;font-size:13px}
+ .main{padding:18px 13px}
+ .top{position:sticky;top:58px;z-index:3;background:#f5f5f7eF;padding:10px 0;backdrop-filter:blur(14px)}
+}
+@media(max-width:520px){
+ body{font-size:14px}
+ .main{padding:12px 10px 28px}
+ .top{top:55px;margin-bottom:16px;gap:8px}
+ .top h1{font-size:22px}
+ .top #refresh{padding:8px 10px;font-size:12px}
+ .section{align-items:flex-start;flex-wrap:wrap;margin:20px 0 11px}
+ .section>button{width:100%}
+ .toolbar{gap:6px}
+ .toolbar button{min-height:40px}
+ .grid{grid-template-columns:repeat(2,minmax(0,1fr))}
+ .stat{padding:12px}
+ .item{gap:9px;flex-wrap:wrap}
+ .item>div:first-child{min-width:0;flex:1 1 180px}
+ .item button{width:100%}
+ .calendar{gap:3px}
+ .day{min-height:66px;padding:4px;border-radius:7px}
+ .day b{font-size:10px}
+ .eventtag{font-size:8px;padding:3px}
+ .compose{gap:6px}
+ .compose button{padding:8px 10px}
+ .upload{grid-template-columns:1fr}
+ .upload button{width:100%}
+ .messages{height:55vh;padding:10px}
+ .bubble{max-width:92%}
+ .modal{padding:8px}
+ .modalbox{padding:17px;border-radius:15px;max-height:94dvh}
+ .auth{margin:4vh 10px;padding:21px}
+}
