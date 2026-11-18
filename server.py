@@ -255,13 +255,30 @@ class Handler(BaseHTTPRequestHandler):
      prompt=str(b.get("message","")).strip()
      if not prompt or len(prompt)>6000:return self.send(400,{"detail":"Message vide ou trop long"})
      key=vault().decrypt(row["value"].encode()).decode()
-     payload=json.dumps({"model":"baidu/ernie-5.5-flash-preview:free","messages":[{"role":"system","content":"Tu es l’assistant de travail de Motif AI. Réponds en français de façon claire, concise et professionnelle."},{"role":"user","content":prompt}],"max_tokens":900}).encode()
+     tools_spec=[{"type":"function","function":{"name":"create_task","description":"Créer une tâche Motif Planner et l’ajouter au planning uniquement si l’utilisateur le demande explicitement et donne une date d’échéance claire.","parameters":{"type":"object","properties":{"title":{"type":"string"},"description":{"type":"string"},"due_date":{"type":"string","description":"Date ISO YYYY-MM-DD"},"priority":{"type":"string","enum":["low","normal","high"]},"project_id":{"type":"integer"},"assignee_id":{"type":"integer"}},"required":["title","due_date"]}}}]
+     payload=json.dumps({"model":"baidu/ernie-5.5-flash-preview:free","messages":[{"role":"system","content":"Tu es l’assistant de travail de Motif AI. Réponds en français, clairement et professionnellement. Tu peux créer une tâche uniquement si l’utilisateur le demande explicitement. Pour cela, appelle create_task et exige un titre et une date précise. Ne prétends jamais avoir créé une tâche sans appel d’outil réussi. Les projets disponibles sont : "+", ".join(r["name"]+" (id "+str(r["id"])+")" for r in c.execute("SELECT id,name FROM projects").fetchall())},{"role":"user","content":prompt}],"tools":tools_spec,"tool_choice":"auto","max_tokens":1200}).encode()
      req=urllib.request.Request("https://openrouter.ai/api/v1/chat/completions",data=payload,headers={"Authorization":"Bearer "+key,"Content-Type":"application/json","HTTP-Referer":"https://motifplanner-api-7p28.onrender.com","X-Title":"Motif Planner"},method="POST")
      try:
-      with urllib.request.urlopen(req,timeout=35) as response: result=json.loads(response.read())
-      return self.send(200,{"answer":result["choices"][0]["message"]["content"]})
+      with urllib.request.urlopen(req,timeout=45) as response: result=json.loads(response.read())
+      msg=result["choices"][0]["message"];created=None
+      for call in msg.get("tool_calls",[]):
+       if call.get("function",{}).get("name")!="create_task":continue
+       args=json.loads(call["function"].get("arguments","{}"))
+       if not has_perm(u,"create_tasks"):return self.send(403,{"detail":"Droit de création de tâches requis"})
+       title=str(args.get("title","")).strip()[:180];due=str(args.get("due_date",""))[:10]
+       if not title or len(due)!=10 or due[4:5]!="-" or due[7:8]!="-":return self.send(400,{"detail":"Le titre et une date valide sont requis pour créer la tâche"})
+       assignee=args.get("assignee_id") or None
+       if assignee and int(assignee)!=u["id"] and not has_perm(u,"assign_tasks"):return self.send(403,{"detail":"Droit d’assignation requis"})
+       if u["role"]=="member" and assignee is None:assignee=u["id"]
+       project_id=args.get("project_id") or None
+       if project_id and not c.execute("SELECT 1 FROM projects WHERE id=?",(int(project_id),)).fetchone():project_id=None
+       cur=c.execute("INSERT INTO tasks(title,description,assignee_id,due_date,priority,created_by,created_at,project_id) VALUES(?,?,?,?,?,?,?,?)",(title,str(args.get("description",""))[:5000],assignee,due,args.get("priority","normal"),u["id"],now(),project_id))
+       created={"id":cur.lastrowid,"title":title,"due_date":due}
+       if assignee and int(assignee)!=u["id"]:c.execute("INSERT INTO notifications(user_id,title,body,kind,created_at) VALUES(?,?,?,?,?)",(int(assignee),"Nouvelle tâche",title,"task",now()))
+      answer=msg.get("content") or ("Tâche créée et ajoutée au planning." if created else "Je n’ai pas pu générer de réponse.")
+      return self.send(200,{"answer":answer,"created_task":created})
      except urllib.error.HTTPError as err:return self.send(502,{"detail":"OpenRouter a refusé la requête (HTTP "+str(err.code)+")"})
-     except Exception:return self.send(502,{"detail":"Impossible de contacter OpenRouter"})
+     except Exception:return self.send(502,{"detail":"Impossible de contacter OpenRouter ou de traiter la réponse"})
     if path=="/api/calls":
      cid=secrets.token_urlsafe(16);c.execute("INSERT INTO calls(id,created_by,created_at) VALUES(?,?,?)",(cid,u["id"],now()));return self.send(201,{"id":cid})
     if path.startswith("/api/calls/") and path.endswith("/end"):
